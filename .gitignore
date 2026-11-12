@@ -1,0 +1,38 @@
+# 真实环境变量与密钥
+.env
+.env.*
+!.env.example
+
+# 外部邮箱真实账号配置
+accounts/*.env
+!accounts/*.example.env
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 临时文件与日志
+*.log
+*.pid
+*.tmp
+*.swp
+*.swo
+*~
+
+# 本地编辑器/IDE
+.idea/
+.vscode/
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# 本地构建/打包产物
+dist/
+build/
+*.zip
+*.tar
+*.tar.gz

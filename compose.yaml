@@ -1,0 +1,209 @@
+# MailHub 1.4.0：垃圾邮件训练闭环、规则定时更新、可选 SMTP Smart Host，通知交给 Bulwark 官方 Web Push。
+name: mailhub
+services:
+  stalwart:
+    build:
+      context: ./stalwart
+      args:
+        STALWART_VERSION: v0.16.22
+        STALWART_CLI_VERSION: 1.0.12
+    container_name: mailhub-stalwart
+    restart: unless-stopped
+    labels:
+      com.cyberdeck.mailhub.version: 1.4.0
+      com.cyberdeck.mailhub.service: stalwart
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      STALWART_PUBLIC_URL: ${STALWART_PUBLIC_URL:?set STALWART_PUBLIC_URL in .env}
+      MAIL_HUB_HOSTNAME: ${MAIL_HUB_HOSTNAME:?set MAIL_HUB_HOSTNAME in .env}
+      HUB_DOMAIN: ${HUB_DOMAIN:?set HUB_DOMAIN in .env}
+      HUB_ADMIN_LOCAL_PART: admin
+      STALWART_ADMIN_PASSWORD: ${STALWART_ADMIN_PASSWORD:?set STALWART_ADMIN_PASSWORD in .env}
+      STALWART_REQUEST_TLS_CERTIFICATE: ${STALWART_REQUEST_TLS_CERTIFICATE:-false}
+      MAIL_HUB_BOOTSTRAP_TIMEOUT: ${MAIL_HUB_BOOTSTRAP_TIMEOUT:-180}
+      MAIL_HUB_MANAGE_COLLECTOR_TRUST: ${MAIL_HUB_MANAGE_COLLECTOR_TRUST:-true}
+      MAIL_HUB_COLLECTOR_SMTP_PORT: ${MAIL_HUB_COLLECTOR_SMTP_PORT:-2525}
+      # OIDC 默认关闭。启用后 Stalwart 验证 Bulwark 从 Authentik 获取的 access token。
+      MAIL_HUB_OIDC_ENABLED: ${MAIL_HUB_OIDC_ENABLED:-false}
+      MAIL_HUB_OIDC_ISSUER_URL: ${MAIL_HUB_OIDC_ISSUER_URL:-}
+      MAIL_HUB_OIDC_CLIENT_ID: ${MAIL_HUB_OIDC_CLIENT_ID:-}
+      MAIL_HUB_OIDC_USERNAME_CLAIM: ${MAIL_HUB_OIDC_USERNAME_CLAIM:-email}
+      MAIL_HUB_OIDC_USERNAME_DOMAIN: ${MAIL_HUB_OIDC_USERNAME_DOMAIN:-}
+      MAIL_HUB_OIDC_NAME_CLAIM: ${MAIL_HUB_OIDC_NAME_CLAIM:-name}
+      # 垃圾邮件规则定时更新；0 表示关闭。
+      MAIL_HUB_SPAM_RULES_UPDATE_HOURS: ${MAIL_HUB_SPAM_RULES_UPDATE_HOURS:-168}
+      MAIL_HUB_SPAM_RULES_UPDATE_DELAY_SECONDS: ${MAIL_HUB_SPAM_RULES_UPDATE_DELAY_SECONDS:-300}
+      # Collector 二次转投必然命中的标签，分数置 0；设为空字符串关闭。
+      MAIL_HUB_COLLECTOR_NEUTRAL_TAGS: ${MAIL_HUB_COLLECTOR_NEUTRAL_TAGS-HELO_NOT_FQDN,HELO_NORES_A_OR_MX,FORGED_RECIPIENTS,FORGED_RCVD_TRAIL,DMARC_NA,RCVD_NO_TLS_LAST}
+      # 可选：自定义递归 DNS（仅 IP，逗号分隔，可带 :端口）。留空使用容器系统 DNS。
+      MAIL_HUB_DNS_SERVERS: ${MAIL_HUB_DNS_SERVERS:-}
+      # 可选：SMTP Smart Host 外发。默认关闭，保持 Stalwart 默认 MX 直投。
+      MAIL_HUB_RELAY_ENABLED: ${MAIL_HUB_RELAY_ENABLED:-false}
+      MAIL_HUB_RELAY_HOST: ${MAIL_HUB_RELAY_HOST:-}
+      MAIL_HUB_RELAY_PORT: ${MAIL_HUB_RELAY_PORT:-587}
+      MAIL_HUB_RELAY_IMPLICIT_TLS: ${MAIL_HUB_RELAY_IMPLICIT_TLS:-false}
+      MAIL_HUB_RELAY_USERNAME: ${MAIL_HUB_RELAY_USERNAME:-}
+      MAIL_HUB_RELAY_PASSWORD: ${MAIL_HUB_RELAY_PASSWORD:-}
+    ports:
+      - 127.0.0.1:${STALWART_BOOTSTRAP_HOST_PORT:-7080}:8080
+      - ${STALWART_HTTP_HOST_PORT:-8443}:8080
+    expose:
+      - "2525"
+    volumes:
+      - type: bind
+        source: ${DATA_ROOT:-/mnt/data/docker/mail-hub}/stalwart/etc
+        target: /etc/stalwart
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${DATA_ROOT:-/mnt/data/docker/mail-hub}/stalwart/data
+        target: /var/lib/stalwart
+        bind:
+          create_host_path: true
+    networks:
+      - mailhub
+  bulwark:
+    build:
+      context: ./bulwark
+      args:
+        BULWARK_VERSION: 1.9.2
+    container_name: mailhub-bulwark
+    restart: unless-stopped
+    labels:
+      com.cyberdeck.mailhub.version: 1.4.0
+      com.cyberdeck.mailhub.service: bulwark
+    depends_on:
+      stalwart:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      APP_NAME: ${BULWARK_APP_NAME:-Mail Hub}
+      APP_SHORT_NAME: Mail
+      APP_DESCRIPTION: Private Mail Hub
+      # Bulwark 会把这个地址交给浏览器，因此必须填写浏览器可访问的公网 URL，
+      # 不能填写 stalwart:8080 这类只在 Docker 内部可解析的地址。
+      JMAP_SERVER_URL: ${STALWART_PUBLIC_URL:?set STALWART_PUBLIC_URL in .env}
+      STALWART_FEATURES: "true"
+      SETTINGS_SYNC_ENABLED: "true"
+      SESSION_SECRET: ${BULWARK_SESSION_SECRET:?set BULWARK_SESSION_SECRET in .env}
+      SETTINGS_DATA_DIR: /app/data/settings
+      ADMIN_CONFIG_DIR: /app/data/admin
+      ADMIN_STATE_DIR: /app/data/admin-state
+      TELEMETRY_DATA_DIR: /app/data/telemetry
+      STALWART_ADMIN_ACCESS: auto
+      BULWARK_TELEMETRY: off
+      LOG_LEVEL: info
+      LOG_FORMAT: text
+      SEARCH_ENGINE_INDEXING: "false"
+      TRUSTED_PROXY_DEPTH: ${BULWARK_TRUSTED_PROXY_DEPTH:-1}
+      OAUTH_ENABLED: ${MAIL_HUB_OIDC_ENABLED:-false}
+      OAUTH_ONLY: ${MAIL_HUB_OIDC_ONLY:-true}
+      OAUTH_CLIENT_ID: ${MAIL_HUB_OIDC_CLIENT_ID:-}
+      OAUTH_CLIENT_SECRET: ${MAIL_HUB_OIDC_CLIENT_SECRET:-}
+      OAUTH_ISSUER_URL: ${MAIL_HUB_OIDC_ISSUER_URL:-}
+      OAUTH_SCOPES: ${MAIL_HUB_OIDC_SCOPES:-openid email profile offline_access}
+      OAUTH_ALLOW_PRIVATE_ENDPOINTS: ${MAIL_HUB_OIDC_ALLOW_PRIVATE_ENDPOINTS:-false}
+      AUTO_SSO_ENABLED: ${MAIL_HUB_OIDC_AUTO_SSO:-false}
+    ports:
+      - ${BULWARK_HOST_PORT:-2000}:3000
+    volumes:
+      - type: bind
+        source: ${DATA_ROOT:-/mnt/data/docker/mail-hub}/bulwark
+        target: /app/data
+        bind:
+          create_host_path: true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - mailhub
+  collector:
+    build:
+      context: ./collector
+      args:
+        FETCHMAIL_VERSION: 6.6.7
+    container_name: mailhub-collector
+    hostname: ${COLLECTOR_HOSTNAME:-collector.mailhub.internal}
+    restart: unless-stopped
+    labels:
+      com.cyberdeck.mailhub.version: 1.4.0
+      com.cyberdeck.mailhub.service: collector
+    depends_on:
+      stalwart:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      ACCOUNTS_DIR: /accounts
+      DATA_DIR: /data
+      SMTP_HOST: stalwart
+      SMTP_PORT: ${MAIL_HUB_COLLECTOR_SMTP_PORT:-2525}
+      DEFAULT_LOCAL_RECIPIENT: admin@${HUB_DOMAIN:?set HUB_DOMAIN in .env}
+      SMTP_BATCH_LIMIT: ${SMTP_BATCH_LIMIT:-8}
+      FETCH_ALL_ON_FIRST_RUN: ${COLLECTOR_FETCH_ALL_ON_FIRST_RUN:-false}
+    volumes:
+      - ./accounts:/accounts:ro
+      - type: bind
+        source: ${DATA_ROOT:-/mnt/data/docker/mail-hub}/collector
+        target: /data
+        bind:
+          create_host_path: true
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/bin/healthcheck.sh
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - mailhub
+  trainer:
+    # 一次性工具，不随 `docker compose up` 启动：
+    #   docker compose run --rm trainer --dry-run
+    #   docker compose run --rm trainer
+    build:
+      context: ./trainer
+    profiles:
+      - tools
+    restart: "no"
+    labels:
+      com.cyberdeck.mailhub.version: 1.4.0
+      com.cyberdeck.mailhub.service: trainer
+    depends_on:
+      stalwart:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      STALWART_URL: http://stalwart:8080
+      TRAIN_SPAM_LIMIT: ${TRAIN_SPAM_LIMIT:-200}
+      TRAIN_HAM_LIMIT: ${TRAIN_HAM_LIMIT:-300}
+      TRAIN_HAM_INCLUDE_INBOX: ${TRAIN_HAM_INCLUDE_INBOX:-false}
+    volumes:
+      - ./accounts:/accounts:ro
+      - type: bind
+        source: ${DATA_ROOT:-/mnt/data/docker/mail-hub}/trainer
+        target: /state
+        bind:
+          create_host_path: true
+      # Stalwart 首次启动时自动生成的 automation API key。
+      - type: bind
+        source: ${DATA_ROOT:-/mnt/data/docker/mail-hub}/stalwart/data/.mailhub-automation-key
+        target: /run/mailhub/automation-key
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - mailhub
+networks:
+  mailhub:
+    name: mailhub-net
+    driver: bridge
